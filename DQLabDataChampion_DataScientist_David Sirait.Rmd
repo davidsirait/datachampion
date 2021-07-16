@@ -1,0 +1,286 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# A. Data wrangling dan Data Cleaning
+
+Data yang bersih artinya data yang kita miliki dapat dengan mudah dimengerti dan dijelajahi, serta dapat dengan mudah dimodelkan. Secara lebih detail, data kita semestinya tidak memiliki missing value(NA, NULL, meskipun beberapa case hal ini diperbolehkan), membuang kolom data yang tidak relevan, maupun data yang secara logika tidak masuk akal atau tidak berada di tempat seharusnya.
+
+Pertama-tama kita akan membaca dan melihat raw data yang diberikan, dan kemudian melakukan data cleansing sesuai dengan kriteria diatas
+
+
+
+```{r}
+
+#menyiapkan packages maupun library yang dibutuhkan
+library(scales,dplyr) #untuk analisa dan cleansing data
+library(ggplot2)       #library ggplot untuk visualisasi data
+
+#membaca data dalam format file csv
+dataset <- read.csv(file= "preliminary_dataset.csv",header =TRUE, sep =",")
+dataset <- as.data.frame(dataset)
+
+#melihat detail dan summary dari dataset 
+str(dataset)
+summary(dataset)
+
+```
+Data memiliki 6 kolom/variabel, yaitu {X,user_id,merhcant_id,coupon_value,three_trx, dan five_trx}.
+
+Variabel X tidak memiliki heading di data asli, dan hanya menandakan nomor urut dari baris data. Ke 5 variable lain berbentuk integer,namun semestinya berbentuk factor karena berupa variabel categorical yang tidak kontinyu.
+
+
+## A.1 Missing data 
+
+Dari fungsi summary(dataset) terlihat ada beberapa baris data yang memiliki nilai NA. Kita akan mencari dan melihat baris dengan missing value
+
+```{r}
+#Mencari indeks data yang hilang
+na_data<- dataset[rowSums(is.na(dataset))> 0,]
+na_data
+
+#Mencari persentase data yang hilang
+misvalue <- length (na_data[,1])/length(dataset[,1]) 
+percent(misvalue)
+```
+Terdapat 3 baris data dengan missing value, dengan hanya kolom X saja yang memiliki informasi.Di kolom X terdapat informasi yang seharusnya masuk ke kolom lain, namun terdapat data
+
+DIbandingkan dengan total data yang ada, baris dengan missing value hanya sejumlah 0,0367% saja, sehingga ketiga baris data di drop
+```{r}
+#menghapus baris data yang hilang
+dataset <- na.omit(dataset)
+```
+## A.2 Menyesuaikan jenis variabel
+
+Masih ada variabe/kolom yang jenis datanya tidak sesuai (data categorical berbentuk int). Dengan fungsi mutate kolom-kolom tersebut diubah menjadi factor
+```{r}
+
+dataset_trans <- dataset %>%
+   mutate(
+     coupon_value = as.factor(coupon_value),
+    three_trx = as.factor(three_trx),
+     five_trx = as.factor(five_trx),
+    merchant_id = as.factor(merchant_id),
+     user_id = as.factor(user_id)
+   )
+```
+
+Sementara itu, variable X di drop dari dataset untuk karena tidak relevan terhadap analisa jumlah kupon mana yang berpengaruh terhadap jumlah transaksi customer
+
+```{r}
+dataset_trans <- dataset_trans[,-1]
+```
+## A.3 Mencari data yang tidak sesuai
+
+Jika melihat sekilas dataset kita, terlihat bahwa ada user yang melakukan 5 transaksi (nilai di kolom five_trx untuk user tersebut =1) sementara nilai di kolom three_trxnya adalah 0.Hal ini dirasa kurang masuk akal, mengingat jika seorang customer telah melakukan lima transaksi, maka pada saat transaksi ketiga seharusnya dia telah tercatat telah melakukan tiga transaksi lanjutan dan kolom three_trx seharusnya berisi angka 1.
+
+KOde di bawah melihat berapa banyak user yang melakukan 5 transaksi namun tanpa data 3 transaksi
+
+
+```{r}
+#Mencari jumlah user yang tercatat melakukan hanya 5 transaksi saja
+
+dataset_trans[grepl(0,dataset_trans$three_trx)&grepl(1,dataset_trans$five_trx),]
+```
+Terlihat bahwa ada 4 customer yang sesuai kriteria. Untuk handling kasus ini, maka nilai di kolom three_trx diisi manual dengan angka 1 sebagai penanda bahwa customer ini sebenarnya juga telah melakukan 3 transaksi setelah mendapat kupon
+
+```{r}
+#menyimpan data user yang tercatat melakukan hanya 5 transaksi saja ke dalam variable baru
+temp <- dataset_trans[grepl(0,dataset_trans$three_trx)&grepl(1,dataset_trans$five_trx),]
+
+#Mengganti nilai di kolom three_trx untuk customer sesuai kriteria di atas menjadi 1
+temp$three_trx[grepl(0,temp$three_trx)] <- 1
+temp
+
+#memasukkan baris data yang telah dimodifikasi ke dalam dataset awal dengan fungsi match sesuai user id
+dataset_trans[match(temp$user_id,dataset_trans$user_id),] <- temp
+
+```
+# B. Visualisasi 
+
+## B.1 Hubungan antara merchant dengan jumlah transaksi
+Melalui visualisasi bar chart, dapat dilihat apakah ada hubungan antara jumlah user yang melakukan transaksi setelah mendapat voucher dengan penjual atau merchant tertentu. 
+
+Pertama-tama kita perlu mencari tahu berapa jumlah user yang melakukan transaksi 3 dan 5 kali di tiap merchant, menggunakan fungsi group by merchant_id dan summarise 
+
+
+```{r}
+#Mencari berapa jumlah user yang melakukan 3 dan 5 transaksi di masing2 merchant dan disimpan ke dalam variable dataset_mer
+dataset_mer <- dataset_trans%>%
+  group_by (merchant_id) %>%
+  summarise(tiga_transaksi = sum(three_trx == 1),lima_transaksi = sum(five_trx==1)) 
+dataset_mer
+str(dataset_mer)
+
+```
+Melalui fungsi str(dataset_mer), maka kita dapat melihat terdapat 50 merchant id unik, atau dengan kata lain 50 toko berbeda. Namun dari hasil grouping, terlihat bahwa sebenarnya terdapat toko yang tidak mencatat user yang melakukan transaksi lebih banyak (kolom tiga_transaksi dan lima_transaksi = 0)
+
+Kode di bawah akan men-drop merchant yang tidak mendapat user yang berbelanja lebih banyak setelah mendapat kupon
+```{r}
+#menghilangkan data merchant tanpa data transaksi yang lebih banyak dengan funsi grepl
+dataset_merchant <- dataset_mer[! (grepl(0,dataset_mer$tiga_transaksi) &grepl(0,dataset_mer$lima_transaksi)),]
+```
+Kini jumlah baris berkurang menjadi hanya 29 baris/toko saja
+
+Tahap selanjutnya adalah visualisasi dengan fungsi ggplot menggunakan library ggplot2 untuk membandingkan jumlah user yang melakukan 3 dan 5 transaksi di tiap toko. Namun sebelumnya, kita perlu menggabungkan nilai yang ada kolom tiga_transaksi dan lima_transaksi ke dalam satu kolom saja. Hal ini untuk mempermudah dalam melakukan input ke fungsi ggplot
+
+```{r}
+#Menggabungkan nilai di dalam kolom tiga_transaksi dan lima_transaksi ke dalam satu kolom "value", dengan fungsi gather
+library(tidyr)
+dat_gather <- dataset_merchant%>%
+  gather("transaksi","value",-merchant_id)
+dat_gather
+```
+
+Langkah akhir adalah membuat grafik dengan fungsi ggplot dan geom col untuk membuat grafik bar chart. Sumbu X berisi kode unik merchant, dan sumbu Y adalah jumlah user yang melakukan transaksi
+
+```{r}
+#Visualised merchant and further trx connection
+
+ggplot(dat_gather , aes(x= merchant_id,y = value,fill = transaksi))+
+  geom_col (position= "dodge")+
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.7))+
+  labs(
+    x= "ID penjual",
+    y= "Jumlah user yang melakukan transaksi ",
+    title = (main = "Grafik hubungan antar penjual dan jumlah transaksi "
+  ))
+```
+Berdasarkan grafik di atas terlihat bahwa beberapa toko memiliki jumlah transaksi yang jauh lebih banyak dibanding toko lain, terutama untuk kategori tiga transaksi, terlepas dari jumlah voucher yang diberikan di toko tersebut. Hal ini dapat menandakan bahwa  kepopuleran sebuah toko juga memiliki pengaruh terdapat behavior transaksi user. Namun untuk case kali ini, hipotesa tersebut akan dikesampingkan untuk lebih fokus pada analisa jumlah voucher yang berpengaruh terhadap transaksi
+
+## B.2 Hubungan antara nilai voucher dengan jumlah transaksi
+
+Selain analisa numerik, kita dapat melihat pengaruh dari jumlah voucher terhadap jumlah transaksi melalui visualisasi grafik bar chart. Langkah-langkah yang dilakukan sama seperti bagian sebelumnya, dimana kita pertama-tama mengelompokkan dan menjumlahkan (group by dan summarise) jumlah transaksi 3 dan 5 kali berdasarkan besaran nilai voucher
+```{r}
+# Mencari jumlah user yang melakukan 3 dan 5 transaksi lanjutan berdasarkan besar voucher ke dalam kolom tiga_transaksi dan lima_transaksi
+summary(dataset_trans)
+dataset_cek <- dataset_trans %>%
+  group_by (coupon_value) %>%
+  summarise(tiga_transaksi = sum(three_trx == 1),lima_transaksi = sum(five_trx==1))%>%
+  ungroup()%>% #mengembalikan data ke dalam bentuk sebelum grouping
+  
+# mengumpulkan nilai di tiap kolom transaksi ke dalam satu kolom jumlah user
+  gather("transaksi","jumlah_user",-coupon_value)
+
+ggplot(dataset_cek,aes(x=coupon_value,y=jumlah_user,fill=transaksi))+
+  geom_col(position="dodge",colors = "skyblue")+
+  labs(
+    x= "Nilai voucher",
+    y= "User yang melakukan transaksi lanjutan ",
+    title = "Grafik hubungan antara nilai voucher dan jumlah transaksi"
+  )
+```
+Melalui Grafik dapat terlihat bahwa secara umum jumlah user yang melakukan 3 transaksi lebih banyak di kelompok user yang mendapat voucher 25000. 
+
+Hal ini juga terjadi untuk kategori lima transaksi, meskipun jumlahnya tidak terlalu signifikan,
+
+Sementara ini, terlihat bahwa voucher dengan nilai 25000 akan lebih menarik perhatian user dibandingkan voucher 10000. Namun, diperlukan analisa numerik yang lebih dalam lagi di bagian selanjutnya 
+ 
+
+# C. Analisa Numerik
+
+melalui analisa numerik, kita akan membuat sebuah model untuk menentukan nilai voucher berapa yang paling berpengaruh terhadap kecenderungan user untuk berbelanja lebih banyak. Untuk itu, model yang akan digunakan adala LOGISTIC REGRESSION atau logit
+
+Regresi logistik dipilih karena variabel tetap (dalam kasus ini adalah three_trx dan five_trx) berbentuk skala biner yang hanya memiliki dua kategori 1 dan 0. Dengan regresi logistik,model akan memperhitungkan berapa Peluang user akan melakukan transaksi berdasarkan nilai dari variabel bebas (jumlah voucher). Karena memperhitunkan peluang, maka output dari model saat melakukan prediksi nilai variabel tetap tidak akan berada di bawah 0 ataupun di atas 1.
+
+(seperti telah dijelaskan sebelumnya, variable merchant_id dan user_id tidak dimasukkan ke dalam pemodelan karena levelnya terlalu banyak, dan juga ingin fokus ke dalam pengaruh pengaruh jika hanya voucher saja yang menjadi variable bebas)
+
+## C.1 Pemodelan Regresi Logistik
+
+Untuk analisis statisik ini, kita menentukan null hypothesis (Ho) yaitu jumlah voucher tidak berpengaruh terhadap tingkat transaksi user, dan H1 atau hypotesis yang menolak null hypothesis adalah terdapat pengaruh antara jumlah voucher dengan tingkat transaksi. Digunakan significance level (alpha) = 5% atau 0.05 sebagai ambang batas.
+
+```{r}
+#regresi terhadap variable tetap three_trx
+regresi_3 <- glm(three_trx ~ coupon_value ,family=binomial(link='logit'),data=dataset_trans)
+#regresi terhadap variable tetap five_trx
+regresi_5 <- glm(five_trx ~ coupon_value ,family=binomial(link='logit'),data=dataset_trans)
+
+#menampilkan output pemodelan regresi untuk kedua variabel tetap
+summary(regresi_3)
+summary(regresi_5)
+
+```
+Analisa :
+Dari hasil pemodelan, variable coupon value memiliki nilai p-value masing-masing 0.218 dan 0.372. Karena p-value berada diatas nilai alpha 0.05, maka dapat disimpulkan kita tidak dapat menolak null hypothesis ; 
+
+**Dengan kata lain tidak ada pengaruh dari jumlah kupon terhadap jumlah transaksi user setelah menerima kupon.**
+
+## C.2 Penentuan nilai voucher yang paling berpengaruh
+
+Meski model menunjukkan nilai voucher tidak terlalu koefisien _Estimate_ dari output logit, kita dapat melihat secara relatif jumlah voucher mana yang dapat meningkatkan rasio peluang (odds ratio) dari seorang user bertransaksi 3 kali maupun 5 kali. Dengan menggunakan referensi coupon_value = 10000, kita  mendapatkan rasio peluang melalui rumus *exp(koefisien)*, karena pemodelan menggunakan fungsi logaritma.
+
+
+```{r}
+# mencari rasio peluang untuk tiap variabel tetap
+result <- exp(rbind(cbind(Odd_Ratio = coef(regresi_3), confint(regresi_3)),cbind(Odd_Ratio = coef(regresi_5), confint(regresi_5))))
+
+#menampilkan hasil perhitungan rasio peluang
+No <- c(1,2,3,4)
+result <- as.data.frame(cbind(No,result))
+result
+
+```
+
+Baris ke dua dari data result (indeks no 2) menunjukkan odd ratio 1.108. Hal ini berarti jumlah voucher 25000 akan menambah peluang user berbelanja sebanyak 3 kali sebesar *1.1x* dibandingkan dengan voucher senilai 10000. Dan di baris ke 4, odds ratio sebesar 1.49 berarti jumlah voucher 25000 akan meningkatkan peluang user berbelanja sebanak 5 kali sebesar **1.5x** dibandingkan dengan jumlah voucher 10000.Sehingga dapat disimpulkan secara bahwa,secara relatif 
+
+### **voucher 25000 akan lebih menarik user untuk bertransaksi lebih banyak**
+
+## C.3 Analisa cost promosi
+jika dilihat berdasarkan cost (jumlah voucher yang diberikan x harga voucher), 
+```{r}
+#menghitung jumlah voucher yang diberikan
+jumlah_voucher<- table(dataset_trans$coupon_value)
+jumlah_voucher
+#vector harga voucher
+harga <- c(10000,25000)
+#cost promosi yang ditimbulkan
+cost <- harga*jumlah_voucher
+cost
+```
+terlihat bahwa dengan memberikan voucher 25000 sebanyak 1.05x lebih banyak (4195:3978), maka ada terdapat penambahan kemungkinan 1,1x lebih besar nasabah bertransaksi 3 kali dan 1,5x untuk bertransaksi 5 kali. Namun, cost yang ditimbulkan jauh lebih besar, yaitu hingga mencapai 105 juta, atau *2.6 kali lipat* dari biaya untuk promosi 10 ribu. 
+
+# 4. Kesimpulan
+
+* Dari hasil analisa visual, didapatkan bahwa jenis/nama toko berpengaruh terhadap minat belanja user
+* Melalui regresi logistik, jumlah voucher tidak memiliki pengaruh signifikan dalam menarik user untuk bertransaksi lebih lanjut
+* Secara relatif, nilai voucher 25 ribu lebih menarik perhatian user, namun dari segi cost sangat mahal, untuk menaikkan kemungkin transaksi lanjutan sebanyak 1,1x diperlukan cost hingga 2,6 kali dibandingkan dengan voucher 10 ribu
+
+### **Rekomendasi : melakukan promosi dengan voucher 10 ribu, menimbang dari segi cost dan juga kemungkinan peningkatan frekuensi yang tidak terlalu berbeda dengan voucher 25 ribu**
+
+
+
+
+
+
+reference :
+
+https://swanstatistics.com/regresi-logistik-untuk-klasifikasi-biner-dengan-software-r/
+
+https://towardsdatascience.com/simply-explained-logistic-regression-with-example-in-r-b919acb1d6b3
+
+https://towardsdatascience.com/the-art-of-cleaning-your-data-b713dbd49726
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
